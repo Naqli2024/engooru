@@ -1,0 +1,410 @@
+using Engooru.Data;
+using Engooru.DTOs;
+using Engooru.Models;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
+
+namespace Engooru.Controllers
+{
+    [ApiController]
+    [Route("api/users")]
+    public class UserController : ControllerBase
+    {
+        private readonly AppDbContext _context;
+        private readonly PasswordHasher<User> _passwordHasher;
+        private readonly IConfiguration _config;
+
+        public UserController(AppDbContext context, IConfiguration config)
+        {
+            _context = context;
+            _passwordHasher = new PasswordHasher<User>();
+            _config = config;
+        }
+
+        // POST api/users/register
+        [HttpPost("register")]
+        public async Task<IActionResult> RegisterUser(RegisterRequestDto dto)
+        {
+            if (await _context.Users.AnyAsync(u => u.Email == dto.Email))
+            {
+                return BadRequest("Email already exists");
+            }
+
+            var verification = await _context.VerificationCodes.FirstOrDefaultAsync(u => u.Email == dto.Email && u.Mobile == dto.Mobile);
+            if (verification == null || !verification.EmailVerified || !verification.MobileVerified)
+            {
+                return BadRequest("Complete both email and mobile verification");
+            }
+
+            var user = new User
+            {
+                FirstName = dto.FirstName,
+                LastName = dto.LastName,
+                Email = dto.Email,
+                Mobile = dto.Mobile,
+                Role = dto.Role,
+                Profile = dto.Profile,
+                PasswordHash = ""
+            };
+
+            user.PasswordHash = _passwordHasher.HashPassword(user, dto.Password);
+            user.IsVerified = true;
+
+            _context.Users.Add(user);
+
+            // Remove verification entry after user verified
+            _context.VerificationCodes.Remove(verification);
+
+            await _context.SaveChangesAsync();
+
+            var response = new RegisterResponseDto
+            {
+                Id = user.Id,
+                FirstName = user.FirstName,
+                LastName = user.LastName,
+                Email = user.Email,
+                Mobile = user.Mobile,
+                Role = user.Role,
+                Profile = user.Profile,
+                CreatedAt = user.CreatedAt,
+                IsVerified = user.IsVerified
+            };
+
+            return Ok(response);
+        }
+
+        // POST api/users/request-verification
+        [HttpPost("request-verification")]
+        public async Task<IActionResult> RequestVerification(RequestVerificationDto dto)
+        {
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == dto.Email);
+            if (user == null)
+            {
+                return BadRequest("User not found");
+            }
+            if (user.Mobile != dto.Mobile)
+            {
+                return BadRequest("Mobile number does not exist");
+            }
+
+            var emailCode = new Random().Next(100000, 999999).ToString();
+            var mobileCode = new Random().Next(100000, 999999).ToString();
+
+            var response = new VerificationCode
+            {
+                Email = dto.Email,
+                Mobile = dto.Mobile,
+                EmailCode = emailCode,
+                MobileCode = mobileCode
+            };
+            _context.VerificationCodes.Add(response);
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                EmailCode = emailCode,
+                MobileCode = mobileCode
+            }
+            );
+        }
+
+        [HttpPost("verify-email")]
+        public async Task<IActionResult> VerifyEmail(VerifyEmailOtpDto dto)
+        {
+            var record = await _context.VerificationCodes
+        .FirstOrDefaultAsync(v => v.Email == dto.Email);
+
+            if (record == null)
+                return BadRequest("Record not found");
+
+            if (record.EmailCode != dto.EmailCode)
+                return BadRequest("Invalid Email OTP");
+
+            record.EmailVerified = true;
+
+            await _context.SaveChangesAsync();
+
+            // Check if both verified
+            await CheckAndVerifyUser(record.Email, record.Mobile);
+
+            return Ok("Email verified");
+        }
+
+        [HttpPost("verify-mobile")]
+        public async Task<IActionResult> VerifyMobile(VerifyMobileOtpDto dto)
+        {
+            var record = await _context.VerificationCodes
+                .FirstOrDefaultAsync(v => v.Mobile == dto.Mobile);
+
+            if (record == null)
+                return BadRequest("Record not found");
+
+            if (record.MobileCode != dto.MobileCode)
+                return BadRequest("Invalid Mobile OTP");
+
+            record.MobileVerified = true;
+
+            await _context.SaveChangesAsync();
+
+            // Check if both verified
+            await CheckAndVerifyUser(record.Email, record.Mobile);
+
+            return Ok("Mobile verified");
+        }
+
+        // Helper function to check both email and mobile are verified
+        private async Task CheckAndVerifyUser(string email, string mobile)
+        {
+            var verification = await _context.VerificationCodes.FirstOrDefaultAsync(u => u.Email == email && u.Mobile == mobile);
+            if (verification == null)
+                return;
+
+            if (verification.EmailVerified && verification.MobileVerified)
+            {
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email && u.Mobile == mobile);
+                if (user != null)
+                {
+                    user.IsVerified = true;
+                    await _context.SaveChangesAsync();
+                }
+            }
+
+        }
+
+        [HttpPost("login")]
+        public async Task<IActionResult> Login(LoginDto dto)
+        {
+            var user = await _context.Users
+                .FirstOrDefaultAsync(x => x.Email == dto.Email);
+
+            if (user == null)
+                return Unauthorized("Invalid email or password");
+
+            var result = _passwordHasher.VerifyHashedPassword(user, user.PasswordHash, dto.Password);
+
+            if (result == PasswordVerificationResult.Failed)
+                return Unauthorized("Invalid email or password");
+
+            var key = _config["Jwt:Key"];
+
+            if (string.IsNullOrEmpty(key))
+                return StatusCode(500, "JWT Key not configured");
+
+            var token = JwtHelper.GenerateToken(user, key);
+
+            return Ok(new
+            {
+                token,
+                user.Id,
+                user.FirstName,
+                user.LastName,
+                user.Role
+            });
+        }
+
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword(ForgotPasswordDto dto)
+        {
+            if (string.IsNullOrEmpty(dto.Email) && string.IsNullOrEmpty(dto.Mobile))
+                return BadRequest("Provide Email or Mobile");
+
+            var user = await _context.Users.FirstOrDefaultAsync(u =>
+                (dto.Email != null && u.Email == dto.Email) ||
+                (dto.Mobile != null && u.Mobile == dto.Mobile));
+
+            if (user == null)
+                return BadRequest("User not found");
+
+            var record = await _context.VerificationCodes.FirstOrDefaultAsync(v =>
+                v.Email == user.Email && v.Mobile == user.Mobile);
+
+            if (record == null)
+            {
+                record = new VerificationCode
+                {
+                    Email = user.Email,
+                    Mobile = user.Mobile,
+                    EmailCode = "",
+                    MobileCode = ""
+                };
+                _context.VerificationCodes.Add(record);
+            }
+
+            var otp = new Random().Next(100000, 999999).ToString();
+
+            record.ResetOtpExpiry = DateTime.UtcNow.AddMinutes(5);
+
+            if (!string.IsNullOrEmpty(dto.Email))
+            {
+                record.ResetEmailOtp = otp;
+                record.IsResetEmailVerified = false;
+            }
+
+            if (!string.IsNullOrEmpty(dto.Mobile))
+            {
+                record.ResetMobileOtp = otp;
+                record.IsResetMobileVerified = false;
+            }
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { otp });
+        }
+
+        [HttpPost("verify-reset-email")]
+        public async Task<IActionResult> VerifyResetEmail(VerifyResetEmailOtpDto dto)
+        {
+            var record = await _context.VerificationCodes
+                .FirstOrDefaultAsync(v => v.Email == dto.Email);
+
+            if (record == null)
+                return BadRequest("Record not found");
+
+            // Check already verified
+            if (record.IsResetEmailVerified)
+                return Ok("Email already verified");
+
+            if (record.ResetEmailOtp != dto.Otp)
+                return BadRequest("Invalid OTP");
+
+            if (record.ResetOtpExpiry < DateTime.UtcNow)
+                return BadRequest("OTP expired");
+
+            record.IsResetEmailVerified = true;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Email OTP verified");
+        }
+
+        [HttpPost("verify-reset-mobile")]
+        public async Task<IActionResult> VerifyResetMobile(VerifyResetMobileOtpDto dto)
+        {
+            var record = await _context.VerificationCodes
+                .FirstOrDefaultAsync(v => v.Mobile == dto.Mobile);
+
+            if (record == null)
+                return BadRequest("Record not found");
+
+            // Check already verified
+            if (record.IsResetMobileVerified)
+                return Ok("Mobile already verified");
+
+            if (record.ResetMobileOtp != dto.Otp)
+                return BadRequest("Invalid OTP");
+
+            if (record.ResetOtpExpiry < DateTime.UtcNow)
+                return BadRequest("OTP expired");
+
+            record.IsResetMobileVerified = true;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Mobile OTP verified");
+        }
+
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword(ResetPasswordDto dto)
+        {
+            // 1. Validate input
+            if (string.IsNullOrEmpty(dto.Email) && string.IsNullOrEmpty(dto.Mobile))
+                return BadRequest("Email or Mobile is required");
+
+            if (dto.NewPassword != dto.ConfirmPassword)
+                return BadRequest("Passwords do not match");
+
+            if (dto.NewPassword.Length < 6)
+                return BadRequest("Password must be at least 6 characters");
+
+            // 2. Find user
+            var user = await _context.Users.FirstOrDefaultAsync(u =>
+                u.Email == dto.Email || u.Mobile == dto.Mobile);
+
+            if (user == null)
+                return BadRequest("User not found");
+
+            // 3. Get verification record
+            var record = await _context.VerificationCodes.FirstOrDefaultAsync(v =>
+                v.Email == dto.Email || v.Mobile == dto.Mobile);
+
+            if (record == null)
+                return BadRequest("Verification not found");
+
+            // 4. Check OTP expiry
+            if (record.ResetOtpExpiry == null || record.ResetOtpExpiry < DateTime.UtcNow)
+                return BadRequest("OTP expired");
+
+            // 5. Check OTP verified
+            bool isVerified =
+                (!string.IsNullOrEmpty(dto.Email) && record.IsResetEmailVerified) ||
+                (!string.IsNullOrEmpty(dto.Mobile) && record.IsResetMobileVerified);
+
+            if (!isVerified)
+                return BadRequest("OTP not verified");
+
+            // 6. Update password
+            user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
+
+            // 7. Clear OTP
+            record.ResetEmailOtp = null;
+            record.ResetMobileOtp = null;
+            record.IsResetEmailVerified = false;
+            record.IsResetMobileVerified = false;
+            record.ResetOtpExpiry = null;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Password reset successful");
+        }
+
+        [Authorize]
+        [HttpPut("update")]
+        public async Task<IActionResult> UpdateUser(UpdateUserDto dto)
+        {
+            // 1. Get logged-in user ID from JWT
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (string.IsNullOrEmpty(userId))
+                return Unauthorized("Invalid token");
+
+            var user = await _context.Users.FindAsync(Guid.Parse(userId));
+
+            if (user == null)
+                return NotFound("User not found");
+
+            // 2. Update only provided fields
+            if (!string.IsNullOrEmpty(dto.FirstName))
+                user.FirstName = dto.FirstName;
+
+            if (!string.IsNullOrEmpty(dto.LastName))
+                user.LastName = dto.LastName;
+
+            if (!string.IsNullOrEmpty(dto.Mobile))
+                user.Mobile = dto.Mobile;
+
+            if (!string.IsNullOrEmpty(dto.Profile))
+                user.Profile = dto.Profile;
+
+            // 3. Save changes
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                message = "User updated successfully",
+                data = new
+                {
+                    user.Id,
+                    user.FirstName,
+                    user.LastName,
+                    user.Email,
+                    user.Mobile,
+                    user.Role,
+                    user.Profile
+                }
+            });
+        }
+    }
+}
