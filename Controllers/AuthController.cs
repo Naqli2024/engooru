@@ -28,17 +28,12 @@ namespace Engooru.Controllers
         [HttpPost("register")]
         public async Task<IActionResult> RegisterUser(RegisterRequestDto dto)
         {
-            // Check existing user
             if (await _context.Users.AnyAsync(u => u.Email == dto.Email))
-            {
                 return BadRequest("Email already exists");
-            }
 
-            // Generate OTP
             var emailCode = new Random().Next(100000, 999999).ToString();
             var mobileCode = new Random().Next(100000, 999999).ToString();
 
-            // Create temp user object (to satisfy required fields)
             var tempUser = new User
             {
                 FirstName = dto.FirstName,
@@ -47,13 +42,11 @@ namespace Engooru.Controllers
                 Mobile = dto.Mobile,
                 Role = dto.Role,
                 Profile = dto.Profile,
-                PasswordHash = "" // temporary
+                PasswordHash = ""
             };
 
-            // Hash password properly
             var hashedPassword = _passwordHasher.HashPassword(tempUser, dto.Password);
 
-            // Save into VerificationCodes (temporary storage)
             var verification = new VerificationCode
             {
                 Email = dto.Email,
@@ -63,7 +56,6 @@ namespace Engooru.Controllers
                 EmailVerified = false,
                 MobileVerified = false,
 
-                // store user data temporarily
                 FirstName = dto.FirstName,
                 LastName = dto.LastName,
                 Role = dto.Role,
@@ -74,15 +66,15 @@ namespace Engooru.Controllers
             _context.VerificationCodes.Add(verification);
             await _context.SaveChangesAsync();
 
-            // Response
             return Ok(new
             {
                 message = "Verify email and mobile",
-                emailCode = emailCode,
-                mobileCode = mobileCode
+                emailCode,
+                mobileCode
             });
         }
 
+        // POST api/users/verify-email
         [HttpPost("verify-email")]
         public async Task<IActionResult> VerifyEmail(VerifyEmailOtpDto dto)
         {
@@ -104,6 +96,7 @@ namespace Engooru.Controllers
             return Ok("Email verified");
         }
 
+        // POST api/users/verify-mobile
         [HttpPost("verify-mobile")]
         public async Task<IActionResult> VerifyMobile(VerifyMobileOtpDto dto)
         {
@@ -125,25 +118,24 @@ namespace Engooru.Controllers
             return Ok("Mobile verified");
         }
 
+        // Helper function
         private async Task CheckAndCreateUser(VerificationCode record)
         {
             if (record.EmailVerified && record.MobileVerified)
             {
                 var user = new User
                 {
-                    FirstName = record.FirstName,
-                    LastName = record.LastName,
+                    FirstName = record.FirstName!,
+                    LastName = record.LastName!,
                     Email = record.Email,
                     Mobile = record.Mobile,
-                    Role = record.Role,
+                    Role = record.Role!,
                     Profile = record.Profile,
-                    PasswordHash = record.PasswordHash,
+                    PasswordHash = record.PasswordHash!,
                     IsVerified = true
                 };
 
                 _context.Users.Add(user);
-
-                // remove verification after success
                 _context.VerificationCodes.Remove(record);
 
                 await _context.SaveChangesAsync();
@@ -203,11 +195,8 @@ namespace Engooru.Controllers
                 {
                     Email = user.Email,
                     Mobile = user.Mobile,
-
-                    // ✅ REQUIRED FIELDS (IMPORTANT FIX)
-                    EmailCode = "",
-                    MobileCode = "",
-
+                    EmailCode = "000000",
+                    MobileCode = "000000",
                     EmailVerified = true,
                     MobileVerified = true
                 };
@@ -236,7 +225,7 @@ namespace Engooru.Controllers
             return Ok(new
             {
                 message = "OTP sent",
-                otp = otp
+                otp
             });
         }
 
@@ -299,19 +288,16 @@ namespace Engooru.Controllers
             if (dto.NewPassword != dto.ConfirmPassword)
                 return BadRequest("Passwords do not match");
 
-            if (dto.NewPassword.Length < 6)
-                return BadRequest("Password must be at least 6 characters");
-
             var user = await _context.Users.FirstOrDefaultAsync(u =>
-                (dto.Email != null && u.Email == dto.Email) ||
-                (dto.Mobile != null && u.Mobile == dto.Mobile));
+                (!string.IsNullOrEmpty(dto.Email) && u.Email == dto.Email) ||
+                (!string.IsNullOrEmpty(dto.Mobile) && u.Mobile == dto.Mobile));
 
             if (user == null)
                 return BadRequest("User not found");
 
             var record = await _context.VerificationCodes.FirstOrDefaultAsync(v =>
-                (dto.Email != null && v.Email == dto.Email) ||
-                (dto.Mobile != null && v.Mobile == dto.Mobile));
+                (!string.IsNullOrEmpty(dto.Email) && v.Email == dto.Email) ||
+                (!string.IsNullOrEmpty(dto.Mobile) && v.Mobile == dto.Mobile));
 
             if (record == null)
                 return BadRequest("Verification not found");
@@ -328,7 +314,6 @@ namespace Engooru.Controllers
 
             user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
 
-            // Clear OTP after success
             record.ResetEmailOtp = null;
             record.ResetMobileOtp = null;
             record.IsResetEmailVerified = false;

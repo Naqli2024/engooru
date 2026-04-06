@@ -4,22 +4,19 @@ public class VerificationCode
 {
     public Guid Id { get; set; }
 
-    public string FirstName { get; set; }
-    public string LastName { get; set; }
-    public string Role { get; set; }
-    public string Profile { get; set; }
-    public string PasswordHash { get; set; }
+    public string? FirstName { get; set; }
+    public string? LastName { get; set; }
+    public string? Role { get; set; }
+    public string? Profile { get; set; }
+    public string? PasswordHash { get; set; }
 
     public required string Email { get; set; }
-
     public required string Mobile { get; set; }
 
     public required string EmailCode { get; set; }
-
     public required string MobileCode { get; set; }
 
     public bool EmailVerified { get; set; } = false;
-
     public bool MobileVerified { get; set; } = false;
 
     public string? ResetEmailOtp { get; set; }
