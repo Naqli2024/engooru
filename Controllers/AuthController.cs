@@ -204,8 +204,11 @@ namespace Engooru.Controllers
                     Email = user.Email,
                     Mobile = user.Mobile,
                     EmailCode = "",
-                    MobileCode = ""
+                    MobileCode = "",
+                    EmailVerified = true,
+                    MobileVerified = true
                 };
+
                 _context.VerificationCodes.Add(record);
             }
 
@@ -227,7 +230,10 @@ namespace Engooru.Controllers
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { otp });
+            return Ok(new
+            {
+                message = "OTP sent"
+            });
         }
 
         [HttpPost("verify-reset-email")]
@@ -239,14 +245,13 @@ namespace Engooru.Controllers
             if (record == null)
                 return BadRequest("Record not found");
 
-            // Check already verified
             if (record.IsResetEmailVerified)
                 return Ok("Email already verified");
 
             if (record.ResetEmailOtp != dto.Otp)
                 return BadRequest("Invalid OTP");
 
-            if (record.ResetOtpExpiry < DateTime.UtcNow)
+            if (record.ResetOtpExpiry == null || record.ResetOtpExpiry < DateTime.UtcNow)
                 return BadRequest("OTP expired");
 
             record.IsResetEmailVerified = true;
@@ -265,14 +270,13 @@ namespace Engooru.Controllers
             if (record == null)
                 return BadRequest("Record not found");
 
-            // Check already verified
             if (record.IsResetMobileVerified)
                 return Ok("Mobile already verified");
 
             if (record.ResetMobileOtp != dto.Otp)
                 return BadRequest("Invalid OTP");
 
-            if (record.ResetOtpExpiry < DateTime.UtcNow)
+            if (record.ResetOtpExpiry == null || record.ResetOtpExpiry < DateTime.UtcNow)
                 return BadRequest("OTP expired");
 
             record.IsResetMobileVerified = true;
@@ -285,7 +289,6 @@ namespace Engooru.Controllers
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword(ResetPasswordDto dto)
         {
-            // 1. Validate input
             if (string.IsNullOrEmpty(dto.Email) && string.IsNullOrEmpty(dto.Mobile))
                 return BadRequest("Email or Mobile is required");
 
@@ -295,25 +298,23 @@ namespace Engooru.Controllers
             if (dto.NewPassword.Length < 6)
                 return BadRequest("Password must be at least 6 characters");
 
-            // 2. Find user
             var user = await _context.Users.FirstOrDefaultAsync(u =>
-                u.Email == dto.Email || u.Mobile == dto.Mobile);
+                (dto.Email != null && u.Email == dto.Email) ||
+                (dto.Mobile != null && u.Mobile == dto.Mobile));
 
             if (user == null)
                 return BadRequest("User not found");
 
-            // 3. Get verification record
             var record = await _context.VerificationCodes.FirstOrDefaultAsync(v =>
-                v.Email == dto.Email || v.Mobile == dto.Mobile);
+                (dto.Email != null && v.Email == dto.Email) ||
+                (dto.Mobile != null && v.Mobile == dto.Mobile));
 
             if (record == null)
                 return BadRequest("Verification not found");
 
-            // 4. Check OTP expiry
             if (record.ResetOtpExpiry == null || record.ResetOtpExpiry < DateTime.UtcNow)
                 return BadRequest("OTP expired");
 
-            // 5. Check OTP verified
             bool isVerified =
                 (!string.IsNullOrEmpty(dto.Email) && record.IsResetEmailVerified) ||
                 (!string.IsNullOrEmpty(dto.Mobile) && record.IsResetMobileVerified);
@@ -321,10 +322,9 @@ namespace Engooru.Controllers
             if (!isVerified)
                 return BadRequest("OTP not verified");
 
-            // 6. Update password
             user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
 
-            // 7. Clear OTP
+            // Clear OTP after success
             record.ResetEmailOtp = null;
             record.ResetMobileOtp = null;
             record.IsResetEmailVerified = false;
