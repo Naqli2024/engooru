@@ -28,18 +28,18 @@ namespace Engooru.Controllers
         [HttpPost("register")]
         public async Task<IActionResult> RegisterUser(RegisterRequestDto dto)
         {
+            // Check existing user
             if (await _context.Users.AnyAsync(u => u.Email == dto.Email))
             {
                 return BadRequest("Email already exists");
             }
 
-            var verification = await _context.VerificationCodes.FirstOrDefaultAsync(u => u.Email == dto.Email && u.Mobile == dto.Mobile);
-            if (verification == null || !verification.EmailVerified || !verification.MobileVerified)
-            {
-                return BadRequest("Complete both email and mobile verification");
-            }
+            // Generate OTP
+            var emailCode = new Random().Next(100000, 999999).ToString();
+            var mobileCode = new Random().Next(100000, 999999).ToString();
 
-            var user = new User
+            // Create temp user object (to satisfy required fields)
+            var tempUser = new User
             {
                 FirstName = dto.FirstName,
                 LastName = dto.LastName,
@@ -47,75 +47,47 @@ namespace Engooru.Controllers
                 Mobile = dto.Mobile,
                 Role = dto.Role,
                 Profile = dto.Profile,
-                PasswordHash = ""
+                PasswordHash = "" // temporary
             };
 
-            user.PasswordHash = _passwordHasher.HashPassword(user, dto.Password);
-            user.IsVerified = true;
+            // Hash password properly
+            var hashedPassword = _passwordHasher.HashPassword(tempUser, dto.Password);
 
-            _context.Users.Add(user);
-
-            // Remove verification entry after user verified
-            _context.VerificationCodes.Remove(verification);
-
-            await _context.SaveChangesAsync();
-
-            var response = new RegisterResponseDto
-            {
-                Id = user.Id,
-                FirstName = user.FirstName,
-                LastName = user.LastName,
-                Email = user.Email,
-                Mobile = user.Mobile,
-                Role = user.Role,
-                Profile = user.Profile,
-                CreatedAt = user.CreatedAt,
-                IsVerified = user.IsVerified
-            };
-
-            return Ok(response);
-        }
-
-        // POST api/users/request-verification
-        [HttpPost("request-verification")]
-        public async Task<IActionResult> RequestVerification(RequestVerificationDto dto)
-        {
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == dto.Email);
-            if (user == null)
-            {
-                return BadRequest("User not found");
-            }
-            if (user.Mobile != dto.Mobile)
-            {
-                return BadRequest("Mobile number does not exist");
-            }
-
-            var emailCode = new Random().Next(100000, 999999).ToString();
-            var mobileCode = new Random().Next(100000, 999999).ToString();
-
-            var response = new VerificationCode
+            // Save into VerificationCodes (temporary storage)
+            var verification = new VerificationCode
             {
                 Email = dto.Email,
                 Mobile = dto.Mobile,
                 EmailCode = emailCode,
-                MobileCode = mobileCode
+                MobileCode = mobileCode,
+                EmailVerified = false,
+                MobileVerified = false,
+
+                // store user data temporarily
+                FirstName = dto.FirstName,
+                LastName = dto.LastName,
+                Role = dto.Role,
+                Profile = dto.Profile,
+                PasswordHash = hashedPassword
             };
-            _context.VerificationCodes.Add(response);
+
+            _context.VerificationCodes.Add(verification);
             await _context.SaveChangesAsync();
 
+            // Response
             return Ok(new
             {
-                EmailCode = emailCode,
-                MobileCode = mobileCode
-            }
-            );
+                message = "Verify email and mobile",
+                emailCode = emailCode,
+                mobileCode = mobileCode
+            });
         }
 
         [HttpPost("verify-email")]
         public async Task<IActionResult> VerifyEmail(VerifyEmailOtpDto dto)
         {
             var record = await _context.VerificationCodes
-        .FirstOrDefaultAsync(v => v.Email == dto.Email);
+                .FirstOrDefaultAsync(v => v.Email == dto.Email);
 
             if (record == null)
                 return BadRequest("Record not found");
@@ -127,8 +99,7 @@ namespace Engooru.Controllers
 
             await _context.SaveChangesAsync();
 
-            // Check if both verified
-            await CheckAndVerifyUser(record.Email, record.Mobile);
+            await CheckAndCreateUser(record);
 
             return Ok("Email verified");
         }
@@ -149,29 +120,34 @@ namespace Engooru.Controllers
 
             await _context.SaveChangesAsync();
 
-            // Check if both verified
-            await CheckAndVerifyUser(record.Email, record.Mobile);
+            await CheckAndCreateUser(record);
 
             return Ok("Mobile verified");
         }
 
-        // Helper function to check both email and mobile are verified
-        private async Task CheckAndVerifyUser(string email, string mobile)
+        private async Task CheckAndCreateUser(VerificationCode record)
         {
-            var verification = await _context.VerificationCodes.FirstOrDefaultAsync(u => u.Email == email && u.Mobile == mobile);
-            if (verification == null)
-                return;
-
-            if (verification.EmailVerified && verification.MobileVerified)
+            if (record.EmailVerified && record.MobileVerified)
             {
-                var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email && u.Mobile == mobile);
-                if (user != null)
+                var user = new User
                 {
-                    user.IsVerified = true;
-                    await _context.SaveChangesAsync();
-                }
-            }
+                    FirstName = record.FirstName,
+                    LastName = record.LastName,
+                    Email = record.Email,
+                    Mobile = record.Mobile,
+                    Role = record.Role,
+                    Profile = record.Profile,
+                    PasswordHash = record.PasswordHash,
+                    IsVerified = true
+                };
 
+                _context.Users.Add(user);
+
+                // remove verification after success
+                _context.VerificationCodes.Remove(record);
+
+                await _context.SaveChangesAsync();
+            }
         }
 
         [HttpPost("login")]
