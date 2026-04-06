@@ -188,8 +188,8 @@ namespace Engooru.Controllers
                 return BadRequest("Provide Email or Mobile");
 
             var user = await _context.Users.FirstOrDefaultAsync(u =>
-                (dto.Email != null && u.Email == dto.Email) ||
-                (dto.Mobile != null && u.Mobile == dto.Mobile));
+                (!string.IsNullOrEmpty(dto.Email) && u.Email == dto.Email) ||
+                (!string.IsNullOrEmpty(dto.Mobile) && u.Mobile == dto.Mobile));
 
             if (user == null)
                 return BadRequest("User not found");
@@ -203,8 +203,11 @@ namespace Engooru.Controllers
                 {
                     Email = user.Email,
                     Mobile = user.Mobile,
+
+                    // ✅ REQUIRED FIELDS (IMPORTANT FIX)
                     EmailCode = "",
                     MobileCode = "",
+
                     EmailVerified = true,
                     MobileVerified = true
                 };
@@ -232,7 +235,8 @@ namespace Engooru.Controllers
 
             return Ok(new
             {
-                message = "OTP sent"
+                message = "OTP sent",
+                otp = otp
             });
         }
 
